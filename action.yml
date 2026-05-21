@@ -1,0 +1,133 @@
+name: "pgrls — Postgres RLS linter"
+description: "Lint Postgres Row-Level Security policies for security, performance, and hygiene issues with pgrls."
+author: "pgrls"
+
+branding:
+  icon: "shield"
+  color: "blue"
+
+inputs:
+  database-url:
+    description: "Postgres connection string. If omitted, pgrls reads $DATABASE_URL from the job environment."
+    required: false
+    default: ""
+  schemas:
+    description: "Comma-separated schemas to lint (e.g. 'public,tenant'). Defaults to pgrls's own default."
+    required: false
+    default: ""
+  config:
+    description: "Path to a pgrls.toml config file."
+    required: false
+    default: ""
+  format:
+    description: "Output format: text | json | sarif | markdown | github | junit. Defaults to 'github' (inline run annotations)."
+    required: false
+    default: "github"
+  fail-on:
+    description: "Severity threshold that triggers a nonzero exit: error | warning | info. Defaults to pgrls's own default (warning)."
+    required: false
+    default: ""
+  min-severity:
+    description: "Only display findings at or above this severity: error | warning | info."
+    required: false
+    default: ""
+  rule:
+    description: "Comma-separated rule IDs to run exclusively (e.g. 'SEC001,SEC004')."
+    required: false
+    default: ""
+  exclude-rule:
+    description: "Comma-separated rule IDs to skip."
+    required: false
+    default: ""
+  baseline:
+    description: "Path to a baseline file; only findings absent from it cause a failure."
+    required: false
+    default: ""
+  output:
+    description: "Write the report to this file instead of stdout (e.g. 'pgrls.sarif' to upload to code scanning)."
+    required: false
+    default: ""
+  args:
+    description: "Extra raw arguments appended to the 'pgrls lint' invocation (escape hatch)."
+    required: false
+    default: ""
+  version:
+    description: "pgrls version to install from PyPI (e.g. '0.5.63'). Defaults to the latest release."
+    required: false
+    default: ""
+  python-version:
+    description: "Python version for actions/setup-python."
+    required: false
+    default: "3.x"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install pgrls
+      shell: bash
+      env:
+        IN_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        if [ -n "${IN_VERSION}" ]; then
+          python -m pip install --disable-pip-version-check --quiet "pgrls==${IN_VERSION}"
+        else
+          python -m pip install --disable-pip-version-check --quiet pgrls
+        fi
+        pgrls --version
+
+    - name: Run pgrls lint
+      shell: bash
+      # Inputs are passed via env (not interpolated into the script body)
+      # so a value can never be parsed as part of the command — avoids
+      # GitHub Actions expression/script injection.
+      env:
+        IN_DATABASE_URL: ${{ inputs.database-url }}
+        IN_SCHEMAS: ${{ inputs.schemas }}
+        IN_CONFIG: ${{ inputs.config }}
+        IN_FORMAT: ${{ inputs.format }}
+        IN_FAIL_ON: ${{ inputs.fail-on }}
+        IN_MIN_SEVERITY: ${{ inputs.min-severity }}
+        IN_RULE: ${{ inputs.rule }}
+        IN_EXCLUDE_RULE: ${{ inputs.exclude-rule }}
+        IN_BASELINE: ${{ inputs.baseline }}
+        IN_OUTPUT: ${{ inputs.output }}
+        IN_ARGS: ${{ inputs.args }}
+      run: |
+        # No `set -e`: the step's exit status must be pgrls's own exit
+        # code (the final command), so CI fails exactly when pgrls does.
+        args=(lint)
+        if [ -n "${IN_DATABASE_URL}" ]; then args+=(--database-url "${IN_DATABASE_URL}"); fi
+        if [ -n "${IN_SCHEMAS}" ]; then args+=(--schemas "${IN_SCHEMAS}"); fi
+        if [ -n "${IN_CONFIG}" ]; then args+=(--config "${IN_CONFIG}"); fi
+        if [ -n "${IN_FORMAT}" ]; then args+=(--format "${IN_FORMAT}"); fi
+        if [ -n "${IN_FAIL_ON}" ]; then args+=(--fail-on "${IN_FAIL_ON}"); fi
+        if [ -n "${IN_MIN_SEVERITY}" ]; then args+=(--min-severity "${IN_MIN_SEVERITY}"); fi
+        if [ -n "${IN_BASELINE}" ]; then args+=(--baseline "${IN_BASELINE}"); fi
+        if [ -n "${IN_OUTPUT}" ]; then args+=(--output "${IN_OUTPUT}"); fi
+        if [ -n "${IN_RULE}" ]; then
+          IFS=',' read -ra _rules <<< "${IN_RULE}"
+          for r in "${_rules[@]}"; do
+            r="$(printf '%s' "$r" | xargs)"
+            if [ -n "$r" ]; then args+=(--rule "$r"); fi
+          done
+        fi
+        if [ -n "${IN_EXCLUDE_RULE}" ]; then
+          IFS=',' read -ra _xrules <<< "${IN_EXCLUDE_RULE}"
+          for r in "${_xrules[@]}"; do
+            r="$(printf '%s' "$r" | xargs)"
+            if [ -n "$r" ]; then args+=(--exclude-rule "$r"); fi
+          done
+        fi
+        if [ -n "${IN_ARGS}" ]; then
+          # shellcheck disable=SC2206  # intentional word-splitting for the escape hatch
+          _extra=(${IN_ARGS})
+          args+=("${_extra[@]}")
+        fi
+        echo "+ pgrls ${args[*]}"
+        pgrls "${args[@]}"

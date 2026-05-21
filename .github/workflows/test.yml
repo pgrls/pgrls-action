@@ -1,0 +1,67 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  action:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Smoke: an empty database has no user tables, so there are no
+      #    findings and the action exits 0. Proves install + invoke +
+      #    connect + parse end to end.
+      - name: Lint clean (empty) schema — expect pass
+        uses: ./
+        with:
+          schemas: public
+          fail-on: error
+
+      # 2. Seed a table with no RLS (SEC001, severity error).
+      - name: Seed an insecure table
+        run: psql "$DATABASE_URL" -c "CREATE TABLE leaky (id int);"
+
+      # 3. The action must now fail under fail-on: error.
+      - name: Lint insecure schema — expect failure
+        id: detect
+        continue-on-error: true
+        uses: ./
+        with:
+          schemas: public
+          fail-on: error
+
+      - name: Assert the insecure schema failed the lint
+        run: |
+          if [ "${{ steps.detect.outcome }}" != "failure" ]; then
+            echo "::error::pgrls did not fail on the insecure schema (SEC001 expected)"
+            exit 1
+          fi
+          echo "pgrls correctly failed on the insecure schema."
+
+      # 4. The SARIF output path produces a valid file carrying the finding.
+      - name: Produce SARIF
+        continue-on-error: true
+        uses: ./
+        with:
+          schemas: public
+          format: sarif
+          output: pgrls.sarif
+
+      - name: Validate SARIF
+        run: |
+          test -f pgrls.sarif
+          python3 -c "import json; d=json.load(open('pgrls.sarif')); s=json.dumps(d); assert 'SEC001' in s, 'SEC001 missing from SARIF'; print('SARIF OK')"
