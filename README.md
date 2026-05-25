@@ -3,9 +3,13 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/pgrls/pgrls-action/test.yml?branch=main&label=tests)](https://github.com/pgrls/pgrls-action/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-GitHub Action that runs [**pgrls**](https://github.com/pgrls/pgrls) — a static analyzer for Postgres Row-Level Security — against a database in CI, so policy bugs (broken tenant/per-user scoping, inverted auth checks, write-side holes, performance traps) fail the build instead of shipping.
+GitHub Action that runs [**pgrls**](https://github.com/pgrls/pgrls) — a static analyzer for Postgres Row-Level Security — against a database in CI, so policy bugs (broken tenant/per-user scoping, inverted auth checks, write-side holes, performance traps) fail the build instead of shipping. **44 lint rules**, 12 with mechanical auto-fixes, MIT-licensed.
 
 > **pgrls lints a *live* database**, not SQL files. The action installs pgrls from PyPI and runs `pgrls lint`; your workflow is responsible for standing up a Postgres instance and applying your schema/migrations to it first (a service container is the usual way — see below).
+
+### New in pgrls 0.6.1 — `SEC033`
+
+Any RLS policy that gates access on the `user_metadata` JWT claim is **self-bypassable** in one line of client code (`supabase.auth.updateUser({ data: { role: "admin" } })`). `user_metadata` is end-user writable via the standard Supabase auth API by design; the safe counterpart is `app_metadata` (service-role-only). The action now catches every shape (`->`, `->>`, `#>`, `#>>`, plus direct `raw_user_meta_data` column refs) and fails CI by default. Pin `pgrls/pgrls-action@v1` and you got the rule for free.
 
 ## Quick start
 
