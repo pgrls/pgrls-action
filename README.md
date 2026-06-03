@@ -66,6 +66,51 @@ Upload findings to GitHub code scanning so they appear in the Security tab and i
 
 The default `format: github` instead emits inline run annotations (no upload step needed).
 
+## Supabase
+
+[Supabase](https://supabase.com) projects keep their schema as migrations under `supabase/migrations/`, and their RLS policies lean on Supabase-provided objects — `auth.uid()`, `auth.jwt()`, the `anon` / `authenticated` roles, `request.jwt.claim.*`. pgrls is built for exactly these shapes (`SEC004` / `SEC038` catch a policy whose `USING` is true for an *unauthenticated* request; `SEC033` flags scoping on the end-user-writable `user_metadata` claim; `PERF001` flags an unwrapped `auth.uid()` re-evaluated per row).
+
+The natural way to lint a Supabase project in CI is to stand up the local stack with the [Supabase CLI](https://github.com/supabase/setup-cli) — `supabase start` applies your migrations **and** creates the `auth` schema and roles your policies reference — then point pgrls at the local database:
+
+```yaml
+name: RLS lint (Supabase)
+on: [pull_request]
+
+jobs:
+  pgrls:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # required by upload-sarif
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # Boots local Postgres on :54322 and applies supabase/migrations,
+      # plus the auth schema/roles your RLS policies depend on.
+      - run: supabase start
+
+      - uses: pgrls/pgrls-action@v1
+        with:
+          database-url: postgres://postgres:postgres@localhost:54322/postgres
+          schemas: public
+          format: sarif
+          output: pgrls.sarif
+        # SARIF carries the findings — don't let a nonzero exit skip the upload.
+        continue-on-error: true
+
+      - uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: pgrls.sarif
+```
+
+Findings show up in the **Security** tab and inline on the PR. To **fail the build** instead of (or as well as) reporting, drop the SARIF/`upload-sarif` plumbing and set `fail-on: error` (or `warning`) on the `pgrls-action` step.
+
+> Assumes a standard Supabase project layout (a `supabase/` directory with `config.toml` and `migrations/`, as created by `supabase init`). `supabase start` runs entirely locally against Docker on the runner — no `SUPABASE_ACCESS_TOKEN` or project link needed.
+
 ## Inputs
 
 All inputs are optional.
