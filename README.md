@@ -7,9 +7,9 @@ GitHub Action that runs [**pgrls**](https://github.com/pgrls/pgrls) — a static
 
 > **pgrls lints a *live* database**, not SQL files. The action installs pgrls from PyPI and runs `pgrls lint`; your workflow is responsible for standing up a Postgres instance and applying your schema/migrations to it first (a service container is the usual way — see below).
 
-### New in pgrls 0.16.0 — `SEC038` (semantic anonymous-read, Z3-backed)
+### `SEC038` — semantic anonymous-read detection (Z3-backed)
 
-`SEC038` is the semantic sibling of the always-on `SEC004`: instead of matching the literal `auth.uid() IS NULL OR …` shape, it uses the Z3 SMT solver to *prove* that a read-capable policy's `USING` clause is unconditionally true for an unauthenticated session — catching inverted-auth variants (e.g. `NOT (auth.uid() IS NOT NULL) OR …`) that pattern-matching misses. As of pgrls 0.16.0 the Z3 solver ships in the base install, so SEC038 runs out of the box — no extra setup — alongside the always-on syntactic `SEC004`. Pin `pgrls/pgrls-action@v1` to track the current rule set.
+`SEC038` is the semantic sibling of the always-on `SEC004`: instead of matching the literal `auth.uid() IS NULL OR …` shape, it uses the Z3 SMT solver to *prove* that a read-capable policy's `USING` clause is unconditionally true for an unauthenticated session — catching inverted-auth variants (e.g. `NOT (auth.uid() IS NOT NULL) OR …`) that pattern-matching misses. The Z3 solver ships in pgrls's base install, so SEC038 runs out of the box — no extra setup — alongside the always-on syntactic `SEC004`. Pin `pgrls/pgrls-action@v1` to track the current rule set.
 
 ## Quick start
 

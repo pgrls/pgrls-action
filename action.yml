@@ -52,7 +52,7 @@ inputs:
     required: false
     default: ""
   version:
-    description: "pgrls version to install from PyPI (e.g. '0.5.63'). Defaults to the latest release."
+    description: "Pin a specific pgrls release from PyPI. Omit to install the latest release (recommended)."
     required: false
     default: ""
   python-version:
