@@ -1,5 +1,5 @@
 name: "pgrls — Postgres RLS linter"
-description: "Lint Postgres Row-Level Security policies with pgrls — 55 rules covering broken row scoping, inverted auth checks, write-side holes, and performance traps. 17 rules with mechanical auto-fixes."
+description: "Lint Postgres Row-Level Security policies with pgrls — 57 rules covering broken row scoping, inverted auth checks, write-side holes, and performance traps. 17 rules with mechanical auto-fixes."
 author: "pgrls"
 
 branding:
