@@ -3,7 +3,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/pgrls/pgrls-action/test.yml?branch=main&label=tests)](https://github.com/pgrls/pgrls-action/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-GitHub Action that runs [**pgrls**](https://github.com/pgrls/pgrls) — a static analyzer for Postgres Row-Level Security — against a database in CI, so policy bugs (broken tenant/per-user scoping, inverted auth checks, write-side holes, performance traps) fail the build instead of shipping. **57 lint rules**, 17 with mechanical auto-fixes, MIT-licensed.
+GitHub Action that runs [**pgrls**](https://github.com/pgrls/pgrls) — a static analyzer for Postgres Row-Level Security — against a database in CI, so policy bugs (broken tenant/per-user scoping, inverted auth checks, write-side holes, performance traps) fail the build instead of shipping. **61 lint rules**, 20 with mechanical auto-fixes, MIT-licensed.
 
 > **pgrls lints a *live* database**, not SQL files. The action installs pgrls from PyPI and runs `pgrls lint`; your workflow is responsible for standing up a Postgres instance and applying your schema/migrations to it first (a service container is the usual way — see below).
 
