@@ -65,3 +65,74 @@ jobs:
         run: |
           test -f pgrls.sarif
           python3 -c "import json; d=json.load(open('pgrls.sarif')); s=json.dumps(d); assert 'SEC001' in s, 'SEC001 missing from SARIF'; print('SARIF OK')"
+
+  pr-gate:
+    name: "pr gate (DB-free, mode: pr)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      # Proves the published release is installable AND carries the two
+      # commands `mode: pr` needs — the same pair the action's install step
+      # guards on. A DB-free gate needs no service container.
+      - name: Install pgrls from PyPI and assert the pr surface exists
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --quiet pgrls
+          pgrls --version
+          pgrls pr --help >/dev/null
+          pgrls snapshot --help | grep -q -- --migrations
+          echo "pgrls pr + snapshot --migrations present"
+
+      # pr-gate.sh runs `git worktree` against the CWD repo, so build a
+      # throwaway project whose head loosens a policy the base had scoped.
+      - name: Fabricate a migrations repo (base scoped -> head USING(true))
+        id: repo
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/proj"
+          mkdir -p "$W/supabase/migrations"
+          cd "$W"
+          git init -q && git config user.email ci@example.com && git config user.name ci
+          printf '%s\n' \
+            "CREATE TABLE public.t (id int, tenant_id uuid NOT NULL);" \
+            "ALTER TABLE public.t ENABLE ROW LEVEL SECURITY;" \
+            "ALTER TABLE public.t FORCE ROW LEVEL SECURITY;" \
+            "CREATE POLICY p ON public.t FOR ALL TO authenticated" \
+            "  USING (tenant_id = current_setting('app.t')::uuid)" \
+            "  WITH CHECK (tenant_id = current_setting('app.t')::uuid);" \
+            > supabase/migrations/001_init.sql
+          git add -A && git commit -qm base
+          echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "ALTER POLICY p ON public.t USING (true) WITH CHECK (true);" > supabase/migrations/002_loosen.sql
+          git add -A && git commit -qm head
+          echo "proj=$W" >> "$GITHUB_OUTPUT"
+
+      - name: Gate must FAIL on the dangerous loosening
+        run: |
+          cd "${{ steps.repo.outputs.proj }}"
+          set +e
+          PGRLS_MIGRATIONS=supabase/migrations \
+          PGRLS_BASE_REF="${{ steps.repo.outputs.base }}" \
+            bash "$GITHUB_WORKSPACE/pr-gate.sh" > report.md 2>&1
+          code=$?
+          set -e
+          cat report.md
+          if [ "$code" -ne 1 ]; then echo "::error::expected exit 1 (dangerous loosening), got $code"; exit 1; fi
+          grep -qi "loosened" report.md || { echo "::error::report never names the loosening"; exit 1; }
+          echo "pr gate correctly failed the Z3-verified loosening"
+
+      - name: Gate must PASS when nothing changed (self-diff)
+        run: |
+          set -euo pipefail
+          cd "${{ steps.repo.outputs.proj }}"
+          PGRLS_MIGRATIONS=supabase/migrations \
+          PGRLS_BASE_REF="$(git rev-parse HEAD)" \
+          PGRLS_LINT_FAIL_ON=error \
+            bash "$GITHUB_WORKSPACE/pr-gate.sh"
+          echo "pr gate correctly passed a no-change head"
+
