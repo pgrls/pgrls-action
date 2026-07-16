@@ -1,5 +1,5 @@
 name: "pgrls — Postgres RLS linter"
-description: "Lint Postgres Row-Level Security policies with pgrls — 64 rules covering broken row scoping, inverted auth checks, write-side holes, and performance traps. 20 rules with mechanical auto-fixes."
+description: "Lint Postgres Row-Level Security policies with pgrls — 67 rules covering broken row scoping, inverted auth checks, write-side holes, and performance traps. 20 rules with mechanical auto-fixes. Or gate a PR on a Z3-verified RLS regression with no database (mode: pr)."
 author: "pgrls"
 
 branding:
@@ -7,12 +7,18 @@ branding:
   color: "blue"
 
 inputs:
+  mode:
+    description: "What to run: 'lint' (default — lint one schema) or 'pr' (DB-free base->head regression + lint gate for a pull_request, posts a review comment)."
+    required: false
+    default: "lint"
+
+  # --- lint mode ---------------------------------------------------------------
   database-url:
-    description: "Postgres connection string. If omitted, pgrls reads $DATABASE_URL from the job environment."
+    description: "[lint] Postgres connection string. If omitted, pgrls reads $DATABASE_URL from the job environment."
     required: false
     default: ""
   schemas:
-    description: "Comma-separated schemas to lint (e.g. 'public,tenant'). Defaults to pgrls's own default."
+    description: "Comma-separated schemas (e.g. 'public,tenant'). Defaults to pgrls's own default. (Applies to live-DB/URL sources.)"
     required: false
     default: ""
   config:
@@ -20,39 +26,63 @@ inputs:
     required: false
     default: ""
   format:
-    description: "Output format: text | json | sarif | markdown | github | junit. Defaults to 'github' (inline run annotations)."
+    description: "[lint] Output format: text | json | sarif | markdown | github | junit. Defaults to 'github' (inline run annotations)."
     required: false
     default: "github"
   fail-on:
-    description: "Severity threshold that triggers a nonzero exit: error | warning | info. Defaults to pgrls's own default (warning)."
+    description: "Threshold that triggers a nonzero exit. In lint mode: error | warning | info (pgrls default: warning). In pr mode this gates the DIFF: safe | breaking | requires-review | dangerous (pgrls default: dangerous)."
     required: false
     default: ""
   min-severity:
-    description: "Only display findings at or above this severity: error | warning | info."
+    description: "[lint] Only display findings at or above this severity: error | warning | info."
     required: false
     default: ""
   rule:
-    description: "Comma-separated rule IDs to run exclusively (e.g. 'SEC001,SEC004')."
+    description: "[lint] Comma-separated rule IDs to run exclusively (e.g. 'SEC001,SEC004')."
     required: false
     default: ""
   exclude-rule:
-    description: "Comma-separated rule IDs to skip."
+    description: "[lint] Comma-separated rule IDs to skip."
     required: false
     default: ""
   baseline:
-    description: "Path to a baseline file; only findings absent from it cause a failure."
+    description: "[lint] Path to a baseline file; only findings absent from it cause a failure."
     required: false
     default: ""
   output:
-    description: "Write the report to this file instead of stdout (e.g. 'pgrls.sarif' to upload to code scanning)."
+    description: "[lint] Write the report to this file instead of stdout (e.g. 'pgrls.sarif' to upload to code scanning)."
     required: false
     default: ""
   args:
-    description: "Extra raw arguments appended to the 'pgrls lint' invocation (escape hatch)."
+    description: "[lint] Extra raw arguments appended to the 'pgrls lint' invocation (escape hatch)."
     required: false
     default: ""
+
+  # --- pr mode -----------------------------------------------------------------
+  migrations:
+    description: "[pr] Path to the migrations directory, repo-relative (e.g. 'supabase/migrations', 'prisma/migrations', 'db/migrate'). Required in pr mode."
+    required: false
+    default: ""
+  base-ref:
+    description: "[pr] Git ref/sha of the PR base to diff against. Defaults to the pull_request base sha."
+    required: false
+    default: ${{ github.event.pull_request.base.sha }}
+  head-ref:
+    description: "[pr] Git ref/sha of the head. Defaults to the checked-out tree (leave empty on a normal pull_request checkout)."
+    required: false
+    default: ""
+  lint-fail-on:
+    description: "[pr] Lint severity on the head that fails the gate: error | warning | info (pgrls default: warning)."
+    required: false
+    default: ""
+  comment:
+    description: "[pr] Post/update a sticky pull-request review comment with the report. Needs pull-requests: write permission. Set 'false' to skip."
+    required: false
+    default: "true"
+
+  # --- shared ------------------------------------------------------------------
   version:
-    description: "Pin a specific pgrls release from PyPI. Omit to install the latest release (recommended)."
+    description: "Pin a specific pgrls release from PyPI. Omit to install the latest release. (pr mode requires pgrls >= 0.50.0.)"
     required: false
     default: ""
   python-version:
@@ -72,6 +102,7 @@ runs:
       shell: bash
       env:
         IN_VERSION: ${{ inputs.version }}
+        IN_MODE: ${{ inputs.mode }}
       run: |
         set -euo pipefail
         if [ -n "${IN_VERSION}" ]; then
@@ -80,8 +111,13 @@ runs:
           python -m pip install --disable-pip-version-check --quiet pgrls
         fi
         pgrls --version
+        if [ "${IN_MODE}" = "pr" ] && ! pgrls pr --help >/dev/null 2>&1; then
+          echo "::error::mode: pr requires pgrls >= 0.50.0 (the installed version has no 'pgrls pr'). Pin a newer release with the 'version' input."
+          exit 1
+        fi
 
     - name: Run pgrls lint
+      if: ${{ inputs.mode != 'pr' }}
       shell: bash
       # Inputs are passed via env (not interpolated into the script body)
       # so a value can never be parsed as part of the command — avoids
@@ -131,3 +167,49 @@ runs:
         fi
         echo "+ pgrls ${args[*]}"
         pgrls "${args[@]}"
+
+    - name: Run pgrls PR gate
+      id: prgate
+      if: ${{ inputs.mode == 'pr' }}
+      shell: bash
+      # Inputs via env (never interpolated into the script) — injection-safe.
+      env:
+        PGRLS_MIGRATIONS: ${{ inputs.migrations }}
+        PGRLS_BASE_REF: ${{ inputs.base-ref }}
+        PGRLS_HEAD_REF: ${{ inputs.head-ref }}
+        PGRLS_FAIL_ON: ${{ inputs.fail-on }}
+        PGRLS_LINT_FAIL_ON: ${{ inputs.lint-fail-on }}
+        PGRLS_CONFIG: ${{ inputs.config }}
+        PGRLS_SCHEMAS: ${{ inputs.schemas }}
+      run: bash "${GITHUB_ACTION_PATH}/pr-gate.sh"
+
+    - name: Post pgrls PR comment
+      # always(): post the report even when the gate above failed the step.
+      if: ${{ always() && inputs.mode == 'pr' && inputs.comment == 'true' && github.event.pull_request.number }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPORT: ${{ steps.prgate.outputs.report-file }}
+      run: |
+        set -uo pipefail
+        MARKER="<!-- pgrls-pr-gate -->"
+        # Fall back to the fixed path if the step output is unavailable.
+        if [ -z "${REPORT:-}" ] || [ ! -f "${REPORT:-}" ]; then
+          REPORT="${RUNNER_TEMP:-/tmp}/pgrls-pr-report.md"
+        fi
+        if [ ! -f "${REPORT}" ]; then
+          echo "no pgrls report to post"; exit 0
+        fi
+        body="$(printf '%s\n\n%s' "${MARKER}" "$(cat "${REPORT}")")"
+        # Sticky: update this action's own prior comment (matched by the marker) if present.
+        existing="$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+          --jq ".[] | select(.body != null and (.body | startswith(\"${MARKER}\"))) | .id" 2>/dev/null | head -1)"
+        if [ -n "${existing}" ]; then
+          gh api -X PATCH "repos/${REPO}/issues/comments/${existing}" -f body="${body}" >/dev/null \
+            && echo "updated pgrls comment ${existing}"
+        else
+          gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/comments" -f body="${body}" >/dev/null \
+            && echo "created pgrls comment"
+        fi
