@@ -3,9 +3,12 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/pgrls/pgrls-action/test.yml?branch=main&label=tests)](https://github.com/pgrls/pgrls-action/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-GitHub Action that runs [**pgrls**](https://github.com/pgrls/pgrls) — a static analyzer for Postgres Row-Level Security — against a database in CI, so policy bugs (broken tenant/per-user scoping, inverted auth checks, write-side holes, performance traps) fail the build instead of shipping. **64 lint rules**, 20 with mechanical auto-fixes, MIT-licensed.
+GitHub Action that runs [**pgrls**](https://github.com/pgrls/pgrls) — a static analyzer for Postgres Row-Level Security — in CI, so policy bugs (broken tenant/per-user scoping, inverted auth checks, write-side holes, performance traps) fail the build instead of shipping. **67 lint rules**, 20 with mechanical auto-fixes, MIT-licensed.
 
-> **pgrls lints a *live* database**, not SQL files. The action installs pgrls from PyPI and runs `pgrls lint`; your workflow is responsible for standing up a Postgres instance and applying your schema/migrations to it first (a service container is the usual way — see below).
+Two modes:
+
+- **`lint`** (default) — lint a *live* database's RLS state. The action installs pgrls from PyPI and runs `pgrls lint`; your workflow stands up Postgres and applies your schema/migrations first (a service container is the usual way — see [Quick start](#quick-start)).
+- **`pr`** — a **DB-free pull-request gate**. Snapshots your migrations at the PR base and head (no database, no Docker) and runs `pgrls pr`: it fails the check on a **Z3-verified RLS regression** (a policy this PR loosened) *or* a new RLS finding in the changed schema, and posts a sticky review comment. See [PR gate](#pr-gate-no-database). *(Requires pgrls ≥ 0.50.0.)*
 
 ### `SEC038` — semantic anonymous-read detection (Z3-backed)
 
@@ -46,6 +49,43 @@ jobs:
 ```
 
 `pgrls` reads `$DATABASE_URL` from the job environment automatically, so most workflows don't need the `database-url` input.
+
+## PR gate (no database)
+
+`mode: pr` gates a pull request on RLS **regressions** — with no database and no Docker. It snapshots your migrations directory at the PR **base** and at the **head** (offline, straight from the DDL), then runs `pgrls pr`:
+
+- **diff (base → head)** — did this PR *loosen* an existing policy? `pgrls` proves it with Z3 (a head predicate that admits a strict superset of the base's rows is a **dangerous** regression) and fails the check.
+- **lint (head)** — does the changed schema have new RLS problems (a missing `FORCE`, an inverted-auth `SEC004`/`SEC038` anon-read hole, …)?
+
+Either crossing its threshold fails the check, and a sticky review comment is posted with the report.
+
+```yaml
+name: RLS PR gate
+on: [pull_request]
+
+permissions:
+  contents: read
+  pull-requests: write   # for the review comment
+
+jobs:
+  pgrls-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # required: the base revision must be reachable
+
+      - uses: pgrls/pgrls-action@v1
+        with:
+          mode: pr
+          migrations: supabase/migrations   # or prisma/migrations, db/migrate, …
+          # fail-on: dangerous       # diff gate (default: dangerous)
+          # lint-fail-on: warning    # lint gate on the head (default: warning)
+```
+
+Because both snapshots come from the DDL, **the target database is never touched** — no service container, no `supabase start`, no secrets. Catalog-dependent rules that can't be read from DDL (index/role/function-body/foreign-key checks) are skipped and the report notes the coverage boundary, so a clean verdict is never mistaken for a full live-database audit — pair `mode: pr` with a `mode: lint` job against a live database for full coverage.
+
+> **Layout:** `migrations` points at your migration directory; pgrls detects the ordering convention (Supabase, Prisma, Flyway, sqitch, plain-numbered). A brand-new migrations tree diffs cleanly against an empty base.
 
 ## Code scanning (SARIF)
 
@@ -113,13 +153,21 @@ Findings show up in the **Security** tab and inline on the PR. To **fail the bui
 
 ## Inputs
 
-All inputs are optional.
+All inputs are optional. `mode` selects which set applies.
+
+| Input | Maps to | Default |
+|---|---|---|
+| `mode` | `lint` (default) or `pr` | `lint` |
+| `config` | `--config` (both modes) | `./pgrls.toml` if present |
+| `schemas` | `--schemas` (comma-separated) | pgrls default |
+| `version` | pgrls version to install from PyPI (`pr` needs ≥ 0.50.0) | latest |
+| `python-version` | `actions/setup-python` version | `3.x` |
+
+**`mode: lint`**
 
 | Input | Maps to | Default |
 |---|---|---|
 | `database-url` | `--database-url` | `$DATABASE_URL` |
-| `schemas` | `--schemas` (comma-separated) | pgrls default |
-| `config` | `--config` | `./pgrls.toml` if present |
 | `format` | `--format` (`text`/`json`/`sarif`/`markdown`/`github`/`junit`) | `github` |
 | `fail-on` | `--fail-on` (`error`/`warning`/`info`) | pgrls default (`warning`) |
 | `min-severity` | `--min-severity` | — |
@@ -128,12 +176,21 @@ All inputs are optional.
 | `baseline` | `--baseline` | — |
 | `output` | `--output` (write report to a file) | stdout |
 | `args` | extra raw args appended to `pgrls lint` | — |
-| `version` | pgrls version to install from PyPI | latest |
-| `python-version` | `actions/setup-python` version | `3.x` |
+
+**`mode: pr`**
+
+| Input | Maps to | Default |
+|---|---|---|
+| `migrations` | migrations dir, repo-relative (**required**) | — |
+| `base-ref` | git ref/sha to diff against | pull_request base sha |
+| `head-ref` | git ref/sha of the head | the checked-out tree |
+| `fail-on` | `pr --fail-on` — diff gate (`safe`/`breaking`/`requires-review`/`dangerous`) | pgrls default (`dangerous`) |
+| `lint-fail-on` | `pr --lint-fail-on` — lint gate on the head (`error`/`warning`/`info`) | pgrls default (`warning`) |
+| `comment` | post/update a sticky review comment (needs `pull-requests: write`) | `true` |
 
 ## Exit behavior
 
-The action fails the step exactly when `pgrls lint` exits nonzero. By default pgrls fails on any finding at **warning** or above; set `fail-on: error` to gate only on errors, or wrap the step with `continue-on-error: true` to report without failing.
+The action fails the step exactly when the underlying pgrls command exits nonzero. In `lint` mode that's `pgrls lint` (default: any finding at **warning** or above); in `pr` mode that's `pgrls pr` (a **dangerous** diff regression, or a head finding at **warning** or above). Set `fail-on` / `lint-fail-on` to change the thresholds, or wrap the step with `continue-on-error: true` to report without failing. In `pr` mode the review comment is posted even when the gate fails.
 
 ## Versioning
 
