@@ -76,9 +76,9 @@ jobs:
         with:
           python-version: "3.x"
 
-      # Proves the published release is installable AND carries the two
-      # commands `mode: pr` needs — the same pair the action's install step
-      # guards on. A DB-free gate needs no service container.
+      # Proves the published release resolves AND carries the two commands
+      # `mode: pr` needs — the same pair the action's install step guards on.
+      # A DB-free gate needs no service container.
       - name: Install pgrls from PyPI and assert the pr surface exists
         run: |
           set -euo pipefail
@@ -89,8 +89,10 @@ jobs:
           echo "pgrls pr + snapshot --migrations present"
 
       # pr-gate.sh runs `git worktree` against the CWD repo, so build a
-      # throwaway project whose head loosens a policy the base had scoped.
-      - name: Fabricate a migrations repo (base scoped -> head USING(true))
+      # throwaway project. Start CLEAN: the pass-case must run before the
+      # loosening lands, or the "unchanged" head is the loosened schema and
+      # SEC038 rightly fails it (the gate is not wrong; the fixture was).
+      - name: Fabricate a migrations repo (clean, tenant-scoped)
         id: repo
         run: |
           set -euo pipefail
@@ -108,9 +110,25 @@ jobs:
             > supabase/migrations/001_init.sql
           git add -A && git commit -qm base
           echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "ALTER POLICY p ON public.t USING (true) WITH CHECK (true);" > supabase/migrations/002_loosen.sql
-          git add -A && git commit -qm head
           echo "proj=$W" >> "$GITHUB_OUTPUT"
+
+      # Guards against a gate that just fails everything.
+      - name: Gate must PASS on a clean, unchanged head
+        run: |
+          set -euo pipefail
+          cd "${{ steps.repo.outputs.proj }}"
+          PGRLS_MIGRATIONS=supabase/migrations \
+          PGRLS_BASE_REF="${{ steps.repo.outputs.base }}" \
+          PGRLS_LINT_FAIL_ON=error \
+            bash "$GITHUB_WORKSPACE/pr-gate.sh"
+          echo "pr gate correctly passed a clean, unchanged head"
+
+      - name: Land a migration that loosens the policy to USING(true)
+        run: |
+          set -euo pipefail
+          cd "${{ steps.repo.outputs.proj }}"
+          echo "ALTER POLICY p ON public.t USING (true) WITH CHECK (true);" > supabase/migrations/002_loosen.sql
+          git add -A && git commit -qm loosen
 
       - name: Gate must FAIL on the dangerous loosening
         run: |
@@ -125,14 +143,3 @@ jobs:
           if [ "$code" -ne 1 ]; then echo "::error::expected exit 1 (dangerous loosening), got $code"; exit 1; fi
           grep -qi "loosened" report.md || { echo "::error::report never names the loosening"; exit 1; }
           echo "pr gate correctly failed the Z3-verified loosening"
-
-      - name: Gate must PASS when nothing changed (self-diff)
-        run: |
-          set -euo pipefail
-          cd "${{ steps.repo.outputs.proj }}"
-          PGRLS_MIGRATIONS=supabase/migrations \
-          PGRLS_BASE_REF="$(git rev-parse HEAD)" \
-          PGRLS_LINT_FAIL_ON=error \
-            bash "$GITHUB_WORKSPACE/pr-gate.sh"
-          echo "pr gate correctly passed a no-change head"
-
